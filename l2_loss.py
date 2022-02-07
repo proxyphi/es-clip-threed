@@ -1,7 +1,6 @@
 import argparse
-import math
-import time
 import multiprocessing as mp
+import time
 from datetime import datetime
 from typing import List
 from pathlib import Path
@@ -9,61 +8,61 @@ from pathlib import Path
 from renderer import *
 
 import torch
-import torchvision.transforms as transforms
-from torch.nn import functional as F
 
 import numpy as np
 from tqdm import trange
 from pgpelib import PGPE
 from termcolor import cprint
+from PIL import Image
 
-import clip
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prompt', type=str, required=True)
+    parser.add_argument('--target', type=str, required=True)
     parser.add_argument('--device', type=str)
     parser.add_argument('--n_population', type=int, default=128)
     parser.add_argument('--n_iterations', type=int, default=1000)
     parser.add_argument('--n_primitives', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--target', type=str)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--coordinate_scale', type=float, default=1.0)
     parser.add_argument('--scale_max', type=float, default=1.0)
     parser.add_argument('--scale_min', type=float, default=0.01)
     parser.add_argument('--renderer', type=str, default='BoxRenderer')
-    parser.add_argument('--loss_type', type=str, default='cosine')
 
     args = parser.parse_args()
     return args
 
-def process_augment_renders(renders: List[np.ndarray], device: str, num_augs=4):
-    t = np.stack(renders, axis=0).transpose(0, 3, 1, 2)
-    t = torch.tensor(t).to(device)
-    t = t.type(torch.float32)
-    t = t.repeat_interleave(num_augs, dim=0)
-    new_augment_trans = transforms.Compose([
-        transforms.RandomResizedCrop(224, scale=(0.7, 0.9)),
-        transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
-    ])
-    return new_augment_trans(t)
+def rgba2rgb(rgba_img):
+    h, w = rgba_img.size
+    rgb_img = Image.new('RGB', (h, w))
+    rgb_img.paste(rgba_img)
+    return rgb_img
 
-def fitness(batch, text_features, model, num_renders, num_augs=4, loss_type='cosine'):
-    with torch.no_grad():
-        image_features = model.encode_image(batch)
-        if loss_type == 'cosine':
-            fit = torch.cosine_similarity(image_features, text_features, axis=-1)
-        elif loss_type == 'spherical_dist_loss':
-            image_features = F.normalize(image_features, dim=-1)
-            text_features = F.normalize(text_features, dim=-1)
-            # Make negative since we're maximizing.
-            fit = -(image_features - text_features).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
+def img2arr(img):
+    return np.array(img)
 
-        fit = torch.reshape(fit, (num_renders, num_augs)).mean(axis=-1)
-    
-    fit = fit.to('cpu').tolist()
-    return fit
+def load_target(fn, resize):
+    img = Image.open(fn)
+    img = rgba2rgb(img)
+    h, w = resize
+    img = img.resize((w, h), Image.LANCZOS)
+    img_arr = img2arr(img)
+    img_arr = img_arr.astype(np.float32) / 255.0
+
+    return img_arr
+
+def process_renders(renders: List[np.ndarray]):
+    t = np.stack(renders, axis=0)
+    return t
+
+def l2_loss(x_arr, target_arr):
+    loss = (target_arr - x_arr)**2
+    loss = loss.mean()
+    return loss
+
+def fitness(x_arr, target_arr, loss_fn=l2_loss):
+    return -loss_fn(x_arr, target_arr) # Negative for PGPE to maximize
 
 def get_renderer_args(args):
     renderer_args = {
@@ -72,8 +71,7 @@ def get_renderer_args(args):
         'height': 256,
         'coordinate_scale': args.coordinate_scale,
         'scale_max': args.scale_max,
-        'scale_min': args.scale_min,
-        'random_rotate': False
+        'scale_min': args.scale_min
     }
     return renderer_args
 
@@ -94,7 +92,6 @@ def render_fn(params):
     render = worker_renderer.render(params)
     return render
 
-
 def training_loop(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -114,15 +111,12 @@ def training_loop(args):
         solution_length=renderer.n_params*renderer.n_primitives,
         popsize=args.n_population,
         optimizer='clipup',
-        optimizer_config={'max_speed': 0.2},
+        optimizer_config={'max_speed': 0.15},
         seed=args.seed
     )
 
-    # Initialize CLIP model + Prompt embedding
-    clip_model = clip.load('ViT-B/16', jit=True, device=device)[0]
-    text_input = clip.tokenize(args.prompt).to(device)
-    with torch.no_grad():
-        text_features = clip_model.encode_text(text_input)
+    # Load target image
+    target_image = load_target(args.target, (256, 256))
 
     with Path("output/fitnesses.txt").open('w+') as f:
         f.truncate(0)
@@ -131,7 +125,7 @@ def training_loop(args):
 
     # Evolutionary loop
     n_iterations = args.n_iterations
-    n_augs = 4
+    
     for i in trange(n_iterations):
         try:
             solutions = solver.ask()
@@ -141,33 +135,26 @@ def training_loop(args):
             t1 = time.time()
             renders = render_pool.map(func=render_fn, iterable=solutions)
             renders = [render for render in renders]
+            #renders = [renderer.render(s) for s in solutions]
             t2 = time.time()
-            print(f"Rendering time: {(t2 - t1):.4f}s")
+            #print(f"Rendering time: {(t2 - t1):.4f}s")
 
-            # Process and augment all renders
+            # Process all renders
             t1 = time.time()
-            im_batch = [process_augment_renders(r, device) for r in renders]
+            im_batch = [process_renders(r)[0, :] for r in renders]
             t2 = time.time()
-            print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
+            #print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
 
-            # Rearrange im_batch into even batch_size chunks
-            n_chunks = math.ceil((args.n_population * n_augs) / args.batch_size)
-
-            im_batch = torch.stack(im_batch, dim=0).reshape(-1, 3, 224, 224)
-            im_batches = torch.chunk(im_batch, n_chunks) # n_chunks x [batch, 3, 224, 224]
-
-            chunk_size = args.n_population // n_chunks    
-
+            # Calculate fitness
             t1 = time.time()    
-            fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_augs, loss_type=args.loss_type) for batch in im_batches]
+            fitnesses = [fitness(batch, target_image, loss_fn=l2_loss) for batch in im_batch]
             t2 = time.time()
-            print(f"CLIP Fitness calculation time: {(t2 - t1):.4f}s")
-            fitnesses = np.concatenate(fitnesses)
+            #print(f"L2 Fitness calculation time: {(t2 - t1):.4f}s")
 
             t1 = time.time()
             solver.tell(fitnesses)
             t2 = time.time()
-            print(f"Solver time: {(t2 - t1):.4f}s")
+            #print(f"Solver time: {(t2 - t1):.4f}s")
 
             # TODO This can be replaced by hooks.
             if i % 20 == 0:
@@ -177,15 +164,14 @@ def training_loop(args):
                 with Path("output/fitnesses.txt").open('a') as f:
                     f.write(f"[{datetime.now()}] Iteration: {i} Fitness: {np.max(fitnesses):.8f}\n")
         except KeyboardInterrupt:
-            render_pool.terminate()
-            render_pool.join()
-            renderer.destroy_window()
-            return
-        
+            break
+
+    #print(solver.center)
     render_pool.close()
     render_pool.join()
 
     renderer.destroy_window()
+    pass
 
 if __name__ == '__main__':
     training_loop(parse_args())
