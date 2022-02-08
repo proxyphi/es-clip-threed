@@ -1,12 +1,14 @@
 import argparse
 import math
 import time
+import string
+import datetime
 import multiprocessing as mp
-from datetime import datetime
 from typing import List
 from pathlib import Path
 
 from renderer import *
+from util import save_as_gif
 
 import torch
 import torchvision.transforms as transforms
@@ -95,7 +97,44 @@ def render_fn(params):
     return render
 
 
-def training_loop(args):
+def setup_output_dir(args) -> Path:
+    output_dir = Path("./output/")
+    if not output_dir.exists():
+        output_dir.mkdir()
+    
+    prompt = args.prompt
+    
+    # Removes all punctuation
+    dir_name = prompt.translate(prompt.maketrans("", "", string.punctuation))
+
+    # Extract the first three words in the prompt and replace with _
+    dir_name = '_'.join(dir_name.split(' ')[:3])
+
+    # Append today's date
+    today = datetime.date.today()
+    dir_name = f'{dir_name}_{today.year}{today.month:02}{today.day:02}'
+
+    # Get a number for this run
+    i = 0
+    dir_path = output_dir / Path(dir_name + f'_{i:04}')
+    while dir_path.exists():
+        i += 1
+        dir_path = output_dir / Path(dir_name + f'_{i:04}')
+
+    dir_path.mkdir()
+
+    with (dir_path / "run_args.txt").open('w+') as f:
+        for arg_name, value in vars(args).items():
+            f.write(f"{arg_name}: {value}\n")
+
+    with (dir_path / "fitnesses.txt").open('w+') as f:
+        f.truncate(0)
+    
+    return dir_path
+
+def main(args):
+    output_dir = setup_output_dir(args)
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -124,14 +163,12 @@ def training_loop(args):
     with torch.no_grad():
         text_features = clip_model.encode_text(text_input)
 
-    with Path("output/fitnesses.txt").open('w+') as f:
-        f.truncate(0)
-
     render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
 
     # Evolutionary loop
     n_iterations = args.n_iterations
     n_augs = 4
+    recording_interval = 20
     for i in trange(n_iterations):
         try:
             solutions = solver.ask()
@@ -142,13 +179,13 @@ def training_loop(args):
             renders = render_pool.map(func=render_fn, iterable=solutions)
             renders = [render for render in renders]
             t2 = time.time()
-            print(f"Rendering time: {(t2 - t1):.4f}s")
+            #print(f"Rendering time: {(t2 - t1):.4f}s")
 
             # Process and augment all renders
             t1 = time.time()
             im_batch = [process_augment_renders(r, device) for r in renders]
             t2 = time.time()
-            print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
+            #print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
 
             # Rearrange im_batch into even batch_size chunks
             n_chunks = math.ceil((args.n_population * n_augs) / args.batch_size)
@@ -161,21 +198,23 @@ def training_loop(args):
             t1 = time.time()    
             fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_augs, loss_type=args.loss_type) for batch in im_batches]
             t2 = time.time()
-            print(f"CLIP Fitness calculation time: {(t2 - t1):.4f}s")
+            #print(f"CLIP Fitness calculation time: {(t2 - t1):.4f}s")
             fitnesses = np.concatenate(fitnesses)
 
             t1 = time.time()
             solver.tell(fitnesses)
             t2 = time.time()
-            print(f"Solver time: {(t2 - t1):.4f}s")
+            #print(f"Solver time: {(t2 - t1):.4f}s")
 
             # TODO This can be replaced by hooks.
-            if i % 20 == 0:
+            if (i+1) % recording_interval == 0 or i == 0:
                 best_solution = solver.center.reshape(renderer.n_primitives, renderer.n_params)
-                renderer.render(best_solution, save_image=f"./output/frame_{i:04}.jpg")
+                save_image_name = str(output_dir / f"frame_{i+1:04}.jpg")
+                renderer.render(best_solution, save_image=save_image_name)
                 cprint(f"Fitness: {np.max(fitnesses):.8f}", "green")
-                with Path("output/fitnesses.txt").open('a') as f:
-                    f.write(f"[{datetime.now()}] Iteration: {i} Fitness: {np.max(fitnesses):.8f}\n")
+                with (output_dir / "fitnesses.txt").open('a') as f:
+                    f.write(f"[{datetime.datetime.now()}] Iteration: {i+1} Fitness: {np.max(fitnesses):.8f}\n")
+                
         except KeyboardInterrupt:
             render_pool.terminate()
             render_pool.join()
@@ -187,5 +226,7 @@ def training_loop(args):
 
     renderer.destroy_window()
 
+    save_as_gif(str(output_dir / "output.gif"), str(output_dir / "*.jpg"))
+
 if __name__ == '__main__':
-    training_loop(parse_args())
+    main(parse_args())

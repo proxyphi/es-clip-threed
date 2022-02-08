@@ -19,7 +19,6 @@ class Renderer(ABC):
             n_primitives=50, 
             width=256, 
             height=256, 
-            save_image=True, 
             coordinate_scale=1.0, 
             scale_max=1.0, 
             scale_min=0.001,
@@ -28,13 +27,10 @@ class Renderer(ABC):
         self.n_primitives = n_primitives
         self.width = width
         self.height = height
-        self.save_image = save_image
         self.coordinate_scale = coordinate_scale
-        self.scale_factor = scale_max - scale_min
+        self.scale_max = scale_max
+        self.scale_min = scale_min
         self.random_rotate = random_rotate
-
-        if save_image and not Path("./output/").exists():
-            Path("./output/").mkdir()
 
         # Initialize renderer
         self.vis = o3d.visualization.Visualizer()
@@ -54,7 +50,7 @@ class Renderer(ABC):
         # Camera initialization
         ctr = self.vis.get_view_control()
         ctr.set_lookat(np.zeros((3, 1)))
-        ctr.camera_local_translate(-1, 0.75, 0.75) #front, right, top
+        ctr.camera_local_translate(0, 0., 0.) #front, right, top
 
     @property
     def n_params(self):
@@ -70,9 +66,12 @@ class Renderer(ABC):
 
         # min-max feature scaling
         for j in range(self.n_params):
-            if j >=3 and j <=5:
-                # feature scaling the scale params to [0.01, 0.5]
-                params[:, j] = ((params[:, j] - params[:, j].min()) * (self.scale_factor)) / (params[:, j].max() - params[:, j].min())
+            if j >= 0 and j <= 2:
+                # Rescale x, y, z to [-1, 1] range
+                params[:, j] = -1 + ((params[:, j] - params[:, j].min()) * (2)) / (params[:, j].max() - params[:, j].min())
+            elif j >=3 and j <= 5:
+                # Use [scale_min, scale_max] range for scale features
+                params[:, j] = self.scale_min + ((params[:, j] - params[:, j].min()) * (self.scale_max - self.scale_min)) / (params[:, j].max() - params[:, j].min())
             else:
                 params[:, j] = (params[:, j] - params[:, j].min()) / (params[:, j].max() - params[:, j].min())
 
