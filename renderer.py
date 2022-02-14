@@ -22,7 +22,7 @@ class Renderer(ABC):
             coordinate_scale=1.0, 
             scale_max=1.0, 
             scale_min=0.001,
-            random_rotate=False,
+            num_rotations=0,
             **kwargs):
         self.n_primitives = n_primitives
         self.width = width
@@ -30,12 +30,11 @@ class Renderer(ABC):
         self.coordinate_scale = coordinate_scale
         self.scale_max = scale_max
         self.scale_min = scale_min
-        self.random_rotate = random_rotate
+        self.num_rotations = num_rotations
 
         # Initialize renderer
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(width=self.width, height=self.height, visible=False)
-        self._frame_counter = 0
 
         self.meshes = []
         for _ in range(self.n_primitives):          
@@ -61,7 +60,7 @@ class Renderer(ABC):
     def mesh_fn():
         pass
 
-    def render(self, params, save_image=""):
+    def render(self, params, save_image="", save_rotations=""):
         params = params.copy()
 
         # min-max feature scaling
@@ -95,31 +94,38 @@ class Renderer(ABC):
 
             self.vis.update_geometry(mesh)
 
-        if self.random_rotate:
-            ctr = self.vis.get_view_control()
-            ctr.rotate(
-                10.0 * random.randint(1, 24) * (-1 if random.random() > 0.5 else 1), 
-                0.0
-            )
-
         self.vis.poll_events()
         self.vis.update_renderer()
         if save_image:
             self.vis.capture_screen_image(save_image)
-            self._frame_counter += 1
 
+        # Capture from multiple angles (or just the front)
         im_batch = []
-        for _ in range(1):
+        if self.num_rotations <= 1:
             im_data = np.asarray(self.vis.capture_screen_float_buffer())
             im_batch.append(im_data)
+        else:
+            for i in range(self.num_rotations):
+                if save_rotations:
+                    self.vis.capture_screen_image(f"rotation-temp-{i:03}.jpg")
+
+                im_data = np.asarray(self.vis.capture_screen_float_buffer())
+                im_batch.append(im_data)
+
+                ctr = self.vis.get_view_control()
+
+                # This value is a full rotation around the origin, obtained
+                # after trial and error. There is no decent documentation on this
+                # in Open3D.
+                ctr.rotate(
+                    2094.395 / self.num_rotations, 
+                    0.0
+                )
+                self.vis.poll_events()
+                self.vis.update_renderer()
 
         for i, mesh in enumerate(self.meshes):
-            # Extract individual params for this primitive
             x, y, z, s_x, s_y, s_z, r, g, b = params[i]
-            
-            s_x = min(1.0, max(abs(s_x), 0.01))
-            s_y = min(1.0, max(abs(s_y), 0.01))
-            s_z = min(1.0, max(abs(s_z), 0.01))
 
             # Rescale back up. This effectively forces the scaling to be absolute
             mesh.vertices = o3d.utility.Vector3dVector(

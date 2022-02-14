@@ -1,5 +1,6 @@
 import argparse
 import math
+import glob
 import time
 import string
 import datetime
@@ -28,6 +29,7 @@ def parse_args():
     parser.add_argument('--n_population', type=int, default=128)
     parser.add_argument('--n_iterations', type=int, default=1000)
     parser.add_argument('--n_primitives', type=int, default=50)
+    parser.add_argument('--n_rotations', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--target', type=str)
     parser.add_argument('--seed', type=int, default=0)
@@ -40,13 +42,14 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def process_augment_renders(renders: List[np.ndarray], device: str, num_augs=4):
+def process_augment_renders(renders: List[np.ndarray], device: str):
     t = np.stack(renders, axis=0).transpose(0, 3, 1, 2)
     t = torch.tensor(t).to(device)
     t = t.type(torch.float32)
-    t = t.repeat_interleave(num_augs, dim=0)
+    #t = t.repeat_interleave(num_augs, dim=0)
     new_augment_trans = transforms.Compose([
-        transforms.RandomResizedCrop(224, scale=(0.7, 0.9)),
+        transforms.Resize(224),
+        #transforms.RandomResizedCrop(224, scale=(0.7, 0.9)),
         transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
     ])
     return new_augment_trans(t)
@@ -75,7 +78,7 @@ def get_renderer_args(args):
         'coordinate_scale': args.coordinate_scale,
         'scale_max': args.scale_max,
         'scale_min': args.scale_min,
-        'random_rotate': False
+        'num_rotations': args.n_rotations
     }
     return renderer_args
 
@@ -132,6 +135,22 @@ def setup_output_dir(args) -> Path:
     
     return dir_path
 
+def do_final_render(args, solution, out_file):
+    renderer_cls = get_renderer_class(args.renderer)
+    renderer_args = get_renderer_args(args)
+    renderer_args['num_rotations'] = 30
+
+    temp_renderer = renderer_cls(**renderer_args)
+
+    temp_renderer.render(solution, save_rotations=True)
+    save_as_gif(out_file, "rotation-temp-*.jpg")
+
+    for f in glob.glob("rotation-temp-*.jpg"):
+        try:
+            Path(f).unlink()
+        except FileNotFoundError:
+            continue
+
 def main(args):
     output_dir = setup_output_dir(args)
 
@@ -167,7 +186,7 @@ def main(args):
 
     # Evolutionary loop
     n_iterations = args.n_iterations
-    n_augs = 4
+    n_captures = args.n_rotations
     recording_interval = 20
     for i in trange(n_iterations):
         try:
@@ -188,7 +207,7 @@ def main(args):
             #print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
 
             # Rearrange im_batch into even batch_size chunks
-            n_chunks = math.ceil((args.n_population * n_augs) / args.batch_size)
+            n_chunks = math.ceil((args.n_population * n_captures) / args.batch_size)
 
             im_batch = torch.stack(im_batch, dim=0).reshape(-1, 3, 224, 224)
             im_batches = torch.chunk(im_batch, n_chunks) # n_chunks x [batch, 3, 224, 224]
@@ -196,7 +215,7 @@ def main(args):
             chunk_size = args.n_population // n_chunks    
 
             t1 = time.time()    
-            fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_augs, loss_type=args.loss_type) for batch in im_batches]
+            fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_captures, loss_type=args.loss_type) for batch in im_batches]
             t2 = time.time()
             #print(f"CLIP Fitness calculation time: {(t2 - t1):.4f}s")
             fitnesses = np.concatenate(fitnesses)
@@ -226,6 +245,13 @@ def main(args):
 
     renderer.destroy_window()
 
+    # To view the final evolved model rotating.
+    do_final_render(
+        args,
+        best_solution,
+        str(output_dir /"output-rotating.gif"))
+
+    # To save evolution progress as gif
     save_as_gif(str(output_dir / "output.gif"), str(output_dir / "*.jpg"))
 
 if __name__ == '__main__':

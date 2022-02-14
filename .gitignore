@@ -2,6 +2,7 @@ output/
 **/*.gif
 **/*.jpg
 **/*.png
+**/*.obj
 .vscode/
 
 # Byte-compiled / optimized / DLL files

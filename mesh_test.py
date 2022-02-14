@@ -1,4 +1,6 @@
 import random
+import time
+import math
 from typing import List
 
 import open3d as o3d
@@ -105,13 +107,35 @@ def scale_test() -> List[o3d.geometry.TriangleMesh]:
 def create_random_meshes(n=50) -> List[o3d.geometry.TriangleMesh]:
     return initialize_meshes(random_mesh, n)
 
+def obj_test():
+    mesh1 = o3d.geometry.TriangleMesh.create_box()
+    mesh2 = o3d.geometry.TriangleMesh.create_box()
+    mesh3 = o3d.geometry.TriangleMesh.create_sphere()
 
+    meshes = [mesh1, mesh2, mesh3]
+
+    mesh2.paint_uniform_color([1., 0., 0.])
+
+    mesh3.paint_uniform_color([0., 1., 0.])
+    mesh3.vertices = o3d.utility.Vector3dVector(
+        np.asarray(mesh3.vertices) * [1., 2., 1.]
+    )
+
+    for i, mesh in enumerate(meshes):
+        mesh.compute_vertex_normals()
+        o3d.io.write_triangle_mesh(f"test_{i}.obj", mesh, write_ascii=True)
+
+rotate_phase = 0
 def rotate_view(vis):
+    global rotate_phase
     ctr = vis.get_view_control()
     ctr.rotate(
-        10.0 * random.randint(1, 24) * (-1 if random.random() > 0.5 else 1), 
+        2094.395 / 6, 
         0.0
     )
+
+    time.sleep(0.1)
     return False
 
-o3d.visualization.draw_geometries_with_animation_callback(scale_test(), rotate_view)
+#o3d.visualization.draw_geometries_with_animation_callback(scale_test(), rotate_view)
+obj_test()
