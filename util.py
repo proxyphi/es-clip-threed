@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 from typing import NamedTuple
 
+from scipy.spatial.transform import Rotation
 from PIL import Image
 
 class OBJMetadata(NamedTuple):
@@ -144,3 +145,7 @@ def update_mtl_diffuse(mtl_filename, r, g, b):
         f.truncate()
         f.seek(0)
         f.writelines(mtl_data)
+
+def get_rotation_matrix(r_x, r_y, r_z):
+    R = Rotation.from_euler('zyx', [r_z, r_y, r_x], degrees=True)
+    return R.as_matrix()

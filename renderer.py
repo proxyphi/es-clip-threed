@@ -6,6 +6,7 @@ import util
 
 import open3d as o3d
 import numpy as np
+from termcolor import cprint
 
 random.seed(0)
 
@@ -19,6 +20,8 @@ class Renderer(ABC):
             scale_max=1.0, 
             scale_min=0.001,
             num_rotations=0,
+            background_color='white',
+            enable_rotations=False,
             **kwargs):
         self.n_primitives = n_primitives
         self.width = width
@@ -27,12 +30,28 @@ class Renderer(ABC):
         self.scale_max = scale_max
         self.scale_min = scale_min
         self.num_rotations = num_rotations
+        self.enable_rotations = enable_rotations
 
         # Initialize renderer
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(width=self.width, height=self.height, visible=False)
         opt = self.vis.get_render_option()
-        opt.background_color = np.asarray([0.5, 0.5, 0.5])
+
+        background = []
+        if background_color == 'white':
+            background = [1.0, 1.0, 1.0]
+        elif background_color == 'gray' or background_color == 'grey':
+            background = [0.5, 0.5, 0.5]
+        elif background_color == 'black':
+            background = [0.0, 0.0, 0.0]
+        elif background_color == 'sky':
+            background = [0.529, 0.808, 0.980]
+        else:
+            background = [1.0, 1.0, 1.0]
+            cprint(f"Unsupported background color '{background_color}'. Defaulting to 'white'", 'yellow')
+
+        opt.background_color = np.asarray(background)
+        opt.light_on = True
 
         self.meshes = []
         for _ in range(self.n_primitives):          
@@ -52,7 +71,7 @@ class Renderer(ABC):
 
     @property
     def n_params(self):
-        return 9 # [x, y, z, s_x, s_y, s_z, r, g, b]
+        return 12 # [x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b]
 
     @property
     @abstractmethod
@@ -62,14 +81,21 @@ class Renderer(ABC):
     def _feature_rescale(self, params):
         # min-max feature scaling
         for j in range(self.n_params):
+            denominator = (params[:, j].max() - params[:, j].min())
+            if denominator == 0:
+                continue
+
             if j >= 0 and j <= 2:
-                # Rescale x, y, z to [-1, 1] range
-                params[:, j] = -1 + ((params[:, j] - params[:, j].min()) * (2)) / (params[:, j].max() - params[:, j].min())
+                # Rescale x, y, z to [-0.5, 0.5] range
+                params[:, j] = -0.5 + ((params[:, j] - params[:, j].min()) * (1)) / denominator
             elif j >=3 and j <= 5:
+                # Rescale r_x, r_y, r_z to [0, 360] range.
+                params[:, j] = ((params[:, j] - params[:, j].min()) * (360)) / denominator
+            elif j >=6 and j <= 8:
                 # Use [scale_min, scale_max] range for scale features
-                params[:, j] = self.scale_min + ((params[:, j] - params[:, j].min()) * (self.scale_max - self.scale_min)) / (params[:, j].max() - params[:, j].min())
+                params[:, j] = self.scale_min + ((params[:, j] - params[:, j].min()) * (self.scale_max - self.scale_min)) / denominator
             else:
-                params[:, j] = (params[:, j] - params[:, j].min()) / (params[:, j].max() - params[:, j].min())
+                params[:, j] = (params[:, j] - params[:, j].min()) / denominator
 
         return params
         
@@ -80,11 +106,12 @@ class Renderer(ABC):
 
         for i, mesh in enumerate(self.meshes):
             # Extract individual params for this primitive
-            x, y, z, s_x, s_y, s_z, r, g, b = params[i]
+            x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b = params[i]
 
             x *= self.coordinate_scale
             y *= self.coordinate_scale
             z *= self.coordinate_scale
+
 
             s_x = min(1.0, max(abs(s_x), 0.01))
             s_y = min(1.0, max(abs(s_y), 0.01))
@@ -100,6 +127,10 @@ class Renderer(ABC):
             mesh.vertices = o3d.utility.Vector3dVector(
                 scales * (vertices - center) + center
             )
+
+            if self.enable_rotations:
+                R = util.get_rotation_matrix(r_x, r_y, r_z)
+                mesh.rotate(R, np.array([x, y, z]))
 
             self.vis.update_geometry(mesh)
 
@@ -137,7 +168,11 @@ class Renderer(ABC):
             # Rescale back up. This effectively forces the scaling to be absolute
             # w.r.t the params
             for i, mesh in enumerate(self.meshes):
-                x, y, z, s_x, s_y, s_z, r, g, b = params[i]
+                x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b = params[i]
+
+                if self.enable_rotations:
+                    R = util.get_rotation_matrix(-r_x, -r_y, -r_z)
+                    mesh.rotate(R, np.array([x, y, z]))
 
                 vertices = np.asarray(mesh.vertices)
                 center = np.mean(vertices, axis=0)
@@ -162,7 +197,7 @@ class Renderer(ABC):
             o3d.io.write_triangle_mesh(out_file, mesh, write_ascii=True)
 
             # Have to update diffuse values on MTL with colors from solution.
-            x, y, z, s_x, s_y, s_z, r, g, b = solution[i]
+            x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b = solution[i]
             out_mtl_file = str(out_file_dir / f"temp_{i}.mtl")
             util.update_mtl_diffuse(out_mtl_file, r, g, b)                
 
@@ -183,13 +218,14 @@ class SphereRenderer(Renderer):
     def mesh_fn(self):
         return o3d.geometry.TriangleMesh.create_sphere
 
-class TorusRenderer(Renderer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @property
-    def mesh_fn(self):
-        return o3d.geometry.TriangleMesh.create_torus
+# create_uv_map not supported?
+#class TorusRenderer(Renderer):
+#    def __init__(self, **kwargs):
+#        super().__init__(**kwargs)
+#
+#    @property
+#    def mesh_fn(self):
+#        return o3d.geometry.TriangleMesh.create_torus
 
 class RandomRenderer(Renderer):
     def __init__(self, **kwargs):
@@ -205,7 +241,7 @@ class RandomRenderer(Renderer):
                     o3d.geometry.TriangleMesh.create_octahedron,
                     o3d.geometry.TriangleMesh.create_sphere,
                     o3d.geometry.TriangleMesh.create_tetrahedron,
-                    o3d.geometry.TriangleMesh.create_torus
+                    #o3d.geometry.TriangleMesh.create_torus create_uv_map not supported?
         ]
 
         f = random.choice(fn)

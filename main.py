@@ -55,8 +55,14 @@ def parse_args():
             help="Minimum scale of primitives.")
     parser.add_argument('--renderer', type=str, default='BoxRenderer',
             help="Which renderer to use. See implementing classes of Renderer in renderer.py.")
+    parser.add_argument('--background_color', type=str, default='white',
+            help="What color to use for background. Can be 'white' 'gray'/'grey' or 'black'")
+    parser.add_argument('--enable_rotations', type=bool, default=False,
+            help="Enables rotation of primitives as an optimization parameter.")
     parser.add_argument('--loss_type', type=str, default='cosine',
             help="Can be 'cosine' or 'spherical_dist_loss'.")
+    parser.add_argument('--distance_weight', type=float, default=0.1,
+            help="Multiplier for distance-based penalty.")
 
     args = parser.parse_args()
     return args
@@ -73,23 +79,32 @@ def process_augment_renders(renders: List[np.ndarray], device: str):
     ])
     return new_augment_trans(t)
 
-def fitness(batch, text_features, model, num_renders, num_augs=4, loss_type='cosine'):
+def fitness(batch, text_features, model, num_renders, solutions, num_augs=4, distance_weight=0.1, loss_type='cosine'):
+    # Calculate penalty for center of primitives being far from the origin.
+    #batch, n_prim, n_param
+    # batch, n_prim -> distance from cluster center
+    # batch, 3 -> cluster center
+    centers = torch.mean(solutions[:, :, 0:3], dim=1)
+    distance_from_origin = centers.norm(dim=-1)
+    distance_penalty = distance_weight * distance_from_origin
+    distance_penalty = distance_penalty.repeat_interleave(num_augs, dim=0)
+
     with torch.no_grad():
         image_features = model.encode_image(batch)
         # Need to tile text augs to match up with camera angles
         if text_features.shape[0] > 1:
             n_repeats = image_features.shape[0] // text_features.shape[0]
             text_features = torch.tile(text_features, (n_repeats, 1))
-
-        
         if loss_type == 'cosine':
             fit = torch.cosine_similarity(image_features, text_features, axis=-1)
         elif loss_type == 'spherical_dist_loss':
             image_features = F.normalize(image_features, dim=-1)
             text_features = F.normalize(text_features, dim=-1)
+
             # Make negative since we're maximizing.
             fit = -(image_features - text_features).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
 
+        fit = fit - distance_penalty
         fit = torch.reshape(fit, (num_renders, num_augs)).mean(axis=-1)
     
     fit = fit.to('cpu').tolist()
@@ -103,7 +118,9 @@ def get_renderer_args(args):
         'coordinate_scale': args.coordinate_scale,
         'scale_max': args.scale_max,
         'scale_min': args.scale_min,
-        'num_rotations': args.n_rotations
+        'num_rotations': args.n_rotations,
+        'background_color': args.background_color,
+        'enable_rotations': args.enable_rotations
     }
     return renderer_args
 
@@ -222,7 +239,10 @@ def main(args):
         solution_length=renderer.n_params*renderer.n_primitives,
         popsize=args.n_population,
         optimizer='clipup',
-        optimizer_config={'max_speed': 0.2},
+        optimizer_config= dict(
+            max_speed=0.2,
+            momentum=0.9
+        ),
         seed=args.seed
     )
 
@@ -271,7 +291,13 @@ def main(args):
 
             chunk_size = args.n_population // n_chunks    
 
-            fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_captures, loss_type=args.loss_type) for batch in im_batches]
+            solutions = torch.tensor(np.array(solutions)).to(device)
+
+            fitnesses = [
+                fitness(batch, text_features, clip_model, num_renders=chunk_size, 
+                        solutions=solutions, num_augs=n_captures, loss_type=args.loss_type) 
+                for batch in im_batches
+            ]
             fitnesses = np.concatenate(fitnesses)
 
             # Run evolutionary step
