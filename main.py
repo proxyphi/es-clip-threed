@@ -9,7 +9,7 @@ from typing import List
 from pathlib import Path
 
 from renderer import *
-from util import save_as_gif
+from util import save_as_gif, merge_obj_files, merge_mtl_files
 
 import torch
 import torchvision.transforms as transforms
@@ -24,20 +24,39 @@ import clip
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prompt', type=str, required=True)
-    parser.add_argument('--device', type=str)
-    parser.add_argument('--n_population', type=int, default=128)
-    parser.add_argument('--n_iterations', type=int, default=1000)
-    parser.add_argument('--n_primitives', type=int, default=50)
-    parser.add_argument('--n_rotations', type=int, default=8)
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--target', type=str)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--coordinate_scale', type=float, default=1.0)
-    parser.add_argument('--scale_max', type=float, default=1.0)
-    parser.add_argument('--scale_min', type=float, default=0.01)
-    parser.add_argument('--renderer', type=str, default='BoxRenderer')
-    parser.add_argument('--loss_type', type=str, default='cosine')
+    parser.add_argument('--prompt', type=str, required=True, 
+            help="The prompt that will be used to guide evolution")
+    parser.add_argument('--device', type=str,
+            help="Inference device. Defaults to 'cuda:0' if CUDA is supported, otherwise 'cpu'")
+    parser.add_argument('--n_population', type=int, default=128,
+            help="Population size of PGPE solver. Larger: Better fitness, more resource intensive.")
+    parser.add_argument('--n_iterations', type=int, default=800,
+            help="Number of evolutionary steps to run.")
+    parser.add_argument('--n_primitives', type=int, default=50,
+            help="Number of 3D geometry primitives to use.")
+    parser.add_argument('--n_rotations', type=int, default=4,
+            help="Number of evenly-spaced turns the camera will perform around the object "+\
+                 "before completing a full turn. One screenshot is taken per angle and fed into CLIP.")
+    parser.add_argument('--aug_text_input', type=bool, default=False, 
+            help="If true, then the string '[aug]' when placed in the prompt will be replaced "+\
+                 "with the strings 'from the front', 'from the left', 'from the back', 'from the right'. "+\
+                 "This expects that n_rotations is equal to 4.")
+    parser.add_argument('--recording_interval', type=int, default=20,
+            help="Saves a screenshot and fitness score every recording_interval steps.")
+    parser.add_argument('--batch_size', type=int, default=32,
+            help="Batch size of image tensors passed into CLIP to get fitness scores. " +\
+                 "Should be raised to take up available GPU memory for speed.")
+    parser.add_argument('--seed', type=int, default=0, help="Seed to use for run.")
+    parser.add_argument('--coordinate_scale', type=float, default=1.0, 
+            help="Controls the range that primitives' XYZ coordinates can occupy.")
+    parser.add_argument('--scale_max', type=float, default=0.08,
+            help="Maximum scale of primitives (in relative space, absolute units)")
+    parser.add_argument('--scale_min', type=float, default=0.02,
+            help="Minimum scale of primitives.")
+    parser.add_argument('--renderer', type=str, default='BoxRenderer',
+            help="Which renderer to use. See implementing classes of Renderer in renderer.py.")
+    parser.add_argument('--loss_type', type=str, default='cosine',
+            help="Can be 'cosine' or 'spherical_dist_loss'.")
 
     args = parser.parse_args()
     return args
@@ -57,6 +76,12 @@ def process_augment_renders(renders: List[np.ndarray], device: str):
 def fitness(batch, text_features, model, num_renders, num_augs=4, loss_type='cosine'):
     with torch.no_grad():
         image_features = model.encode_image(batch)
+        # Need to tile text augs to match up with camera angles
+        if text_features.shape[0] > 1:
+            n_repeats = image_features.shape[0] // text_features.shape[0]
+            text_features = torch.tile(text_features, (n_repeats, 1))
+
+        
         if loss_type == 'cosine':
             fit = torch.cosine_similarity(image_features, text_features, axis=-1)
         elif loss_type == 'spherical_dist_loss':
@@ -86,7 +111,7 @@ def get_renderer_class(name):
     renderer = __import__('renderer')
     return getattr(renderer, name)
 
-# For multiprocessing pool.
+### For multiprocessing pool. ###
 worker_renderer = None
 def init_worker(args):
     global worker_renderer
@@ -99,6 +124,7 @@ def render_fn(params):
     render = worker_renderer.render(params)
     return render
 
+#################################
 
 def setup_output_dir(args) -> Path:
     output_dir = Path("./output/")
@@ -151,7 +177,31 @@ def do_final_render(args, solution, out_file):
         except FileNotFoundError:
             continue
 
+def write_obj_out(args, solution, out_file):
+    renderer_cls = get_renderer_class(args.renderer)
+    renderer_args = get_renderer_args(args)
+    temp_renderer = renderer_cls(**renderer_args)
+
+    temp_renderer.render(solution, do_absolute_scaling=False)
+    temp_renderer.write_meshes(solution)
+
+    merge_obj_files("temp_*.obj", out_file)
+    out_mat_file = out_file[:-4] + '.mtl'
+    merge_mtl_files("temp_*.mtl", out_mat_file)
+
+    # Delete all temp obj files.
+    for f in glob.glob("*.obj") + glob.glob("*.mtl"):
+        try:
+            Path(f).unlink()
+        except FileNotFoundError:
+            continue
+
+
 def main(args):
+    if args.aug_text_input and args.n_rotations != 4:
+        cprint("aug_text_input requires that n_rotations == 4.", "red")
+        return
+
     output_dir = setup_output_dir(args)
 
     torch.manual_seed(args.seed)
@@ -178,33 +228,40 @@ def main(args):
 
     # Initialize CLIP model + Prompt embedding
     clip_model = clip.load('ViT-B/16', jit=True, device=device)[0]
-    text_input = clip.tokenize(args.prompt).to(device)
+
+    text_inputs = []
+
+    if args.aug_text_input:
+        text_inputs.append(clip.tokenize(args.prompt.replace('[aug]', 'from the front')).to(device))
+        text_inputs.append(clip.tokenize(args.prompt.replace('[aug]', 'from the left side')).to(device))
+        text_inputs.append(clip.tokenize(args.prompt.replace('[aug]', 'from the back')).to(device))
+        text_inputs.append(clip.tokenize(args.prompt.replace('[aug]', 'from the right side')).to(device))
+    else:
+        text_inputs.append(clip.tokenize(args.prompt).to(device))
+
+    text_features = []
     with torch.no_grad():
-        text_features = clip_model.encode_text(text_input)
+        for text_input in text_inputs:
+            text_features.append(clip_model.encode_text(text_input))
+        text_features = torch.concat(text_features).to(device) # need to look this up
 
     render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
 
     # Evolutionary loop
     n_iterations = args.n_iterations
     n_captures = args.n_rotations
-    recording_interval = 20
+    recording_interval = args.recording_interval
     for i in trange(n_iterations):
         try:
             solutions = solver.ask()
             solutions = [s.reshape((renderer.n_primitives, renderer.n_params)) for s in solutions]
             
             # Render each solution from the solver
-            t1 = time.time()
             renders = render_pool.map(func=render_fn, iterable=solutions)
             renders = [render for render in renders]
-            t2 = time.time()
-            #print(f"Rendering time: {(t2 - t1):.4f}s")
 
             # Process and augment all renders
-            t1 = time.time()
             im_batch = [process_augment_renders(r, device) for r in renders]
-            t2 = time.time()
-            #print(f"Processing / Augmenting time: {(t2 - t1):.4f}s")
 
             # Rearrange im_batch into even batch_size chunks
             n_chunks = math.ceil((args.n_population * n_captures) / args.batch_size)
@@ -214,23 +271,17 @@ def main(args):
 
             chunk_size = args.n_population // n_chunks    
 
-            t1 = time.time()    
             fitnesses = [fitness(batch, text_features, clip_model, num_renders=chunk_size, num_augs=n_captures, loss_type=args.loss_type) for batch in im_batches]
-            t2 = time.time()
-            #print(f"CLIP Fitness calculation time: {(t2 - t1):.4f}s")
             fitnesses = np.concatenate(fitnesses)
 
-            t1 = time.time()
+            # Run evolutionary step
             solver.tell(fitnesses)
-            t2 = time.time()
-            #print(f"Solver time: {(t2 - t1):.4f}s")
 
-            # TODO This can be replaced by hooks.
+            # Recording interval hooks
             if (i+1) % recording_interval == 0 or i == 0:
                 best_solution = solver.center.reshape(renderer.n_primitives, renderer.n_params)
                 save_image_name = str(output_dir / f"frame_{i+1:04}.jpg")
                 renderer.render(best_solution, save_image=save_image_name)
-                cprint(f"Fitness: {np.max(fitnesses):.8f}", "green")
                 with (output_dir / "fitnesses.txt").open('a') as f:
                     f.write(f"[{datetime.datetime.now()}] Iteration: {i+1} Fitness: {np.max(fitnesses):.8f}\n")
                 
@@ -253,6 +304,13 @@ def main(args):
 
     # To save evolution progress as gif
     save_as_gif(str(output_dir / "output.gif"), str(output_dir / "*.jpg"))
+
+    # Write out OBJ of best solution.
+    write_obj_out(
+        args,
+        best_solution,
+        str(output_dir / "output.obj")
+    )
 
 if __name__ == '__main__':
     main(parse_args())

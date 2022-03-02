@@ -3,6 +3,7 @@ output/
 **/*.jpg
 **/*.png
 **/*.obj
+**/*.mtl
 .vscode/
 
 # Byte-compiled / optimized / DLL files

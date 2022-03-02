@@ -2,16 +2,12 @@ import random
 from abc import ABC, abstractmethod, abstractproperty
 from pathlib import Path
 
+import util
 
 import open3d as o3d
 import numpy as np
 
 random.seed(0)
-
-#class RendererOptions(ABC):
-    #def __init__(self, width=256, height=256):
-        #self.width = width
-        #self.height = height
 
 class Renderer(ABC):
     def __init__(
@@ -35,12 +31,15 @@ class Renderer(ABC):
         # Initialize renderer
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(width=self.width, height=self.height, visible=False)
+        opt = self.vis.get_render_option()
+        opt.background_color = np.asarray([0.5, 0.5, 0.5])
 
         self.meshes = []
         for _ in range(self.n_primitives):          
-            mesh = self.mesh_fn()
+            mesh = self.mesh_fn(create_uv_map=True)
 
             mesh.compute_vertex_normals()
+            mesh.compute_triangle_normals()
 
             # Register with renderer too
             self.vis.add_geometry(mesh)
@@ -60,9 +59,7 @@ class Renderer(ABC):
     def mesh_fn():
         pass
 
-    def render(self, params, save_image="", save_rotations=""):
-        params = params.copy()
-
+    def _feature_rescale(self, params):
         # min-max feature scaling
         for j in range(self.n_params):
             if j >= 0 and j <= 2:
@@ -73,6 +70,13 @@ class Renderer(ABC):
                 params[:, j] = self.scale_min + ((params[:, j] - params[:, j].min()) * (self.scale_max - self.scale_min)) / (params[:, j].max() - params[:, j].min())
             else:
                 params[:, j] = (params[:, j] - params[:, j].min()) / (params[:, j].max() - params[:, j].min())
+
+        return params
+        
+
+    def render(self, params, save_image="", save_rotations="", do_absolute_scaling=True):
+        params = params.copy()
+        params = self._feature_rescale(params)
 
         for i, mesh in enumerate(self.meshes):
             # Extract individual params for this primitive
@@ -88,8 +92,13 @@ class Renderer(ABC):
 
             mesh.paint_uniform_color([r, g, b])
             mesh.translate([x, y, z], relative=False)
+
+            vertices = np.asarray(mesh.vertices)
+            center = np.mean(vertices, axis=0)
+            scales = np.asarray([s_x, s_y, s_z])
+
             mesh.vertices = o3d.utility.Vector3dVector(
-                np.asarray(mesh.vertices) * [s_x, s_y, s_z]
+                scales * (vertices - center) + center
             )
 
             self.vis.update_geometry(mesh)
@@ -124,18 +133,38 @@ class Renderer(ABC):
                 self.vis.poll_events()
                 self.vis.update_renderer()
 
-        for i, mesh in enumerate(self.meshes):
-            x, y, z, s_x, s_y, s_z, r, g, b = params[i]
-
+        if do_absolute_scaling:
             # Rescale back up. This effectively forces the scaling to be absolute
-            mesh.vertices = o3d.utility.Vector3dVector(
-                np.asarray(mesh.vertices) / [s_x, s_y, s_z]
-            )
+            # w.r.t the params
+            for i, mesh in enumerate(self.meshes):
+                x, y, z, s_x, s_y, s_z, r, g, b = params[i]
+
+                vertices = np.asarray(mesh.vertices)
+                center = np.mean(vertices, axis=0)
+                scales = np.asarray([s_x, s_y, s_z])
+
+                mesh.vertices = o3d.utility.Vector3dVector(
+                    (1 / scales) * (vertices - center) + center
+                )
         
         return im_batch
 
     def destroy_window(self):
         self.vis.destroy_window()
+
+    def write_meshes(self, solution, output_dir="."):
+        out_file_dir = Path(output_dir)
+        solution = solution.copy()
+        solution = self._feature_rescale(solution)
+
+        for i, mesh in enumerate(self.meshes):
+            out_file = str(out_file_dir / f"temp_{i}.obj")
+            o3d.io.write_triangle_mesh(out_file, mesh, write_ascii=True)
+
+            # Have to update diffuse values on MTL with colors from solution.
+            x, y, z, s_x, s_y, s_z, r, g, b = solution[i]
+            out_mtl_file = str(out_file_dir / f"temp_{i}.mtl")
+            util.update_mtl_diffuse(out_mtl_file, r, g, b)                
 
 
 class BoxRenderer(Renderer):
