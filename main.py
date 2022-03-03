@@ -22,7 +22,9 @@ from termcolor import cprint
 import clip
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument('--prompt', type=str, required=True, 
             help="The prompt that will be used to guide evolution")
     parser.add_argument('--device', type=str,
@@ -80,13 +82,11 @@ def process_augment_renders(renders: List[np.ndarray], device: str):
 
 def fitness(batch, text_features, model, num_renders, solutions, num_augs=4, distance_weight=0.1, loss_type='cosine'):
     # Calculate penalty for center of primitives being far from the origin.
-    #batch, n_prim, n_param
-    # batch, n_prim -> distance from cluster center
-    # batch, 3 -> cluster center
+
     centers = torch.mean(solutions[:, :, 0:3], dim=1)
     distance_from_origin = centers.norm(dim=-1)
     distance_penalty = distance_weight * distance_from_origin
-    distance_penalty = distance_penalty.repeat_interleave(num_augs, dim=0)
+    #distance_penalty = distance_penalty.repeat_interleave(num_augs, dim=0)
 
     with torch.no_grad():
         image_features = model.encode_image(batch)
@@ -203,6 +203,8 @@ def main(args):
 
     output_dir = setup_output_dir(args)
 
+    cprint(f"\nOutput directory initialized at {str(output_dir)}", "green")
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -211,6 +213,7 @@ def main(args):
     else:
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+    cprint(f"\nUsing device {device}\n", "green")
     # Initialize Renderer
     renderer_cls = util.get_renderer_class(args.renderer)
     renderer_args = util.get_renderer_args(args)
@@ -253,6 +256,18 @@ def main(args):
     n_iterations = args.n_iterations
     n_captures = args.n_rotations
     recording_interval = args.recording_interval
+
+    # Used for chunking solutions to fit on GPU based on batch size.
+    n_batches = math.ceil((args.n_population * n_captures) / args.batch_size)
+    chunk_size = args.n_population // n_batches    
+
+    if n_batches > 1:
+        cprint(
+            f"\nHardware will evaluate {n_batches} batches per evolutionary loop. Consider " +\
+            "raising batch_size to fill up available GPU memory for efficiency. \n", 
+            "cyan"
+        )
+
     for i in trange(n_iterations):
         try:
             solutions = solver.ask()
@@ -266,19 +281,24 @@ def main(args):
             im_batch = [process_augment_renders(r, device) for r in renders]
 
             # Rearrange im_batch into even batch_size chunks
-            n_chunks = math.ceil((args.n_population * n_captures) / args.batch_size)
 
             im_batch = torch.stack(im_batch, dim=0).reshape(-1, 3, 224, 224)
-            im_batches = torch.chunk(im_batch, n_chunks) # n_chunks x [batch, 3, 224, 224]
+            im_batches = torch.chunk(im_batch, n_batches) # n_batches x [batch_size, 3, 224, 224]
 
-            chunk_size = args.n_population // n_chunks    
 
+            # n_population x n_prim x n_param
             solutions = torch.tensor(np.array(solutions)).to(device)
+
+            # (n_population * n_captures) x n_prim x n_param
+            solutions = solutions.repeat_interleave(n_captures, dim=0)
+
+            # n_batches x batch_size x n_prim x n_param
+            solution_batches = torch.chunk(solutions, n_batches, dim=0)
 
             fitnesses = [
                 fitness(batch, text_features, clip_model, num_renders=chunk_size, 
-                        solutions=solutions, num_augs=n_captures, loss_type=args.loss_type) 
-                for batch in im_batches
+                        solutions=solution_batch, num_augs=n_captures, loss_type=args.loss_type) 
+                for batch, solution_batch in zip(im_batches, solution_batches)
             ]
             fitnesses = np.concatenate(fitnesses)
 

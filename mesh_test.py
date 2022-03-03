@@ -141,6 +141,20 @@ def obj_test():
         mesh.compute_triangle_normals()
         o3d.io.write_triangle_mesh(f"test_{i}.obj", mesh, write_ascii=True)
 
+def operation_test():
+    mesh = o3d.geometry.TriangleMesh.create_box()
+    mesh.paint_uniform_color([1., 0., 0])
+    R = util.get_rotation_matrix('xyz', 45, 0, 0)
+
+    mesh.vertices = o3d.utility.Vector3dVector(
+        np.asarray(mesh.vertices) * [2., 1., 1.]
+    )
+
+    mesh.rotate(R, np.array([0., 0., 0.]))
+
+    return [mesh]
+
+
 def normals_test():
     mesh = o3d.geometry.TriangleMesh.create_box(create_uv_map=True)
     print(np.asarray(mesh.vertex_normals))
@@ -164,8 +178,8 @@ def rotate_view(vis):
     return False
 
 #o3d.visualization.draw_geometries_with_animation_callback(scale_test(), rotate_view)
-'''
-meshes = scale_test()
+
+meshes = operation_test()
 
 vis = o3d.visualization.Visualizer()
 vis.create_window()
@@ -176,10 +190,11 @@ opt = vis.get_render_option()
 opt.light_on = False
 vis.run()
 vis.destroy_window()
-'''
+
 #obj_test()
 #normals_test()
 
+'''
 render = renderer.BoxRenderer(n_primitives=1)
 x = -0.5
 y = -0.5
@@ -194,3 +209,4 @@ r = 0.5
 g = 0.5
 b = 0.5
 render.render(np.array([[x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b]]), save_image="mesh_test.png")
+'''
