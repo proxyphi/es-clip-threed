@@ -1,15 +1,14 @@
 import argparse
 import math
 import glob
-import time
 import string
 import datetime
 import multiprocessing as mp
 from typing import List
 from pathlib import Path
 
+import util
 from renderer import *
-from util import save_as_gif, merge_obj_files, merge_mtl_files
 
 import torch
 import torchvision.transforms as transforms
@@ -28,7 +27,7 @@ def parse_args():
             help="The prompt that will be used to guide evolution")
     parser.add_argument('--device', type=str,
             help="Inference device. Defaults to 'cuda:0' if CUDA is supported, otherwise 'cpu'")
-    parser.add_argument('--n_population', type=int, default=128,
+    parser.add_argument('--n_population', type=int, default=32,
             help="Population size of PGPE solver. Larger: Better fitness, more resource intensive.")
     parser.add_argument('--n_iterations', type=int, default=800,
             help="Number of evolutionary steps to run.")
@@ -49,19 +48,19 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=0, help="Seed to use for run.")
     parser.add_argument('--coordinate_scale', type=float, default=1.0, 
             help="Controls the range that primitives' XYZ coordinates can occupy.")
-    parser.add_argument('--scale_max', type=float, default=0.08,
+    parser.add_argument('--scale_max', type=float, default=0.1,
             help="Maximum scale of primitives (in relative space, absolute units)")
     parser.add_argument('--scale_min', type=float, default=0.02,
             help="Minimum scale of primitives.")
     parser.add_argument('--renderer', type=str, default='BoxRenderer',
             help="Which renderer to use. See implementing classes of Renderer in renderer.py.")
     parser.add_argument('--background_color', type=str, default='white',
-            help="What color to use for background. Can be 'white' 'gray'/'grey' or 'black'")
+            help="What color to use for background. Can be 'white' 'gray'/'grey', 'black', or 'sky'")
     parser.add_argument('--enable_rotations', type=bool, default=False,
             help="Enables rotation of primitives as an optimization parameter.")
     parser.add_argument('--loss_type', type=str, default='cosine',
             help="Can be 'cosine' or 'spherical_dist_loss'.")
-    parser.add_argument('--distance_weight', type=float, default=0.1,
+    parser.add_argument('--distance_weight', type=float, default=0.03,
             help="Multiplier for distance-based penalty.")
 
     args = parser.parse_args()
@@ -110,30 +109,13 @@ def fitness(batch, text_features, model, num_renders, solutions, num_augs=4, dis
     fit = fit.to('cpu').tolist()
     return fit
 
-def get_renderer_args(args):
-    renderer_args = {
-        'n_primitives': args.n_primitives,
-        'width': 256,
-        'height': 256,
-        'coordinate_scale': args.coordinate_scale,
-        'scale_max': args.scale_max,
-        'scale_min': args.scale_min,
-        'num_rotations': args.n_rotations,
-        'background_color': args.background_color,
-        'enable_rotations': args.enable_rotations
-    }
-    return renderer_args
-
-def get_renderer_class(name):
-    renderer = __import__('renderer')
-    return getattr(renderer, name)
 
 ### For multiprocessing pool. ###
 worker_renderer = None
 def init_worker(args):
     global worker_renderer
-    renderer_cls = get_renderer_class(args.renderer)
-    renderer_args = get_renderer_args(args)
+    renderer_cls = util.get_renderer_class(args.renderer)
+    renderer_args = util.get_renderer_args(args)
     worker_renderer = renderer_cls(**renderer_args)
 
 def render_fn(params):
@@ -179,14 +161,14 @@ def setup_output_dir(args) -> Path:
     return dir_path
 
 def do_final_render(args, solution, out_file):
-    renderer_cls = get_renderer_class(args.renderer)
-    renderer_args = get_renderer_args(args)
+    renderer_cls = util.get_renderer_class(args.renderer)
+    renderer_args = util.get_renderer_args(args)
     renderer_args['num_rotations'] = 30
 
     temp_renderer = renderer_cls(**renderer_args)
 
     temp_renderer.render(solution, save_rotations=True)
-    save_as_gif(out_file, "rotation-temp-*.jpg")
+    util.save_as_gif(out_file, "rotation-temp-*.jpg")
 
     for f in glob.glob("rotation-temp-*.jpg"):
         try:
@@ -195,16 +177,16 @@ def do_final_render(args, solution, out_file):
             continue
 
 def write_obj_out(args, solution, out_file):
-    renderer_cls = get_renderer_class(args.renderer)
-    renderer_args = get_renderer_args(args)
+    renderer_cls = util.get_renderer_class(args.renderer)
+    renderer_args = util.get_renderer_args(args)
     temp_renderer = renderer_cls(**renderer_args)
 
     temp_renderer.render(solution, do_absolute_scaling=False)
     temp_renderer.write_meshes(solution)
 
-    merge_obj_files("temp_*.obj", out_file)
+    util.merge_obj_files("temp_*.obj", out_file)
     out_mat_file = out_file[:-4] + '.mtl'
-    merge_mtl_files("temp_*.mtl", out_mat_file)
+    util.merge_mtl_files("temp_*.mtl", out_mat_file)
 
     # Delete all temp obj files.
     for f in glob.glob("*.obj") + glob.glob("*.mtl"):
@@ -230,8 +212,8 @@ def main(args):
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     # Initialize Renderer
-    renderer_cls = get_renderer_class(args.renderer)
-    renderer_args = get_renderer_args(args)
+    renderer_cls = util.get_renderer_class(args.renderer)
+    renderer_args = util.get_renderer_args(args)
     renderer = renderer_cls(**renderer_args)
 
     # Initialize PGPE Solver
@@ -329,7 +311,7 @@ def main(args):
         str(output_dir /"output-rotating.gif"))
 
     # To save evolution progress as gif
-    save_as_gif(str(output_dir / "output.gif"), str(output_dir / "*.jpg"))
+    util.save_as_gif(str(output_dir / "output.gif"), str(output_dir / "*.jpg"))
 
     # Write out OBJ of best solution.
     write_obj_out(

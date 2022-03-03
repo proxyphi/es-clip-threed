@@ -10,6 +10,7 @@ from termcolor import cprint
 
 random.seed(0)
 
+
 class Renderer(ABC):
     def __init__(
             self, 
@@ -129,7 +130,7 @@ class Renderer(ABC):
             )
 
             if self.enable_rotations:
-                R = util.get_rotation_matrix(r_x, r_y, r_z)
+                R = util.get_rotation_matrix('xyz', r_x, r_y, r_z)
                 mesh.rotate(R, np.array([x, y, z]))
 
             self.vis.update_geometry(mesh)
@@ -171,7 +172,7 @@ class Renderer(ABC):
                 x, y, z, r_x, r_y, r_z, s_x, s_y, s_z, r, g, b = params[i]
 
                 if self.enable_rotations:
-                    R = util.get_rotation_matrix(-r_x, -r_y, -r_z)
+                    R = util.get_rotation_matrix('zyx', -r_z, -r_y, -r_x)
                     mesh.rotate(R, np.array([x, y, z]))
 
                 vertices = np.asarray(mesh.vertices)

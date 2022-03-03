@@ -12,6 +12,24 @@ class OBJMetadata(NamedTuple):
     n_triangles: int
     mtl_file: str
 
+def get_renderer_args(args):
+    renderer_args = {
+        'n_primitives': args.n_primitives,
+        'width': 256,
+        'height': 256,
+        'coordinate_scale': args.coordinate_scale,
+        'scale_max': args.scale_max,
+        'scale_min': args.scale_min,
+        'num_rotations': args.n_rotations,
+        'background_color': args.background_color,
+        'enable_rotations': args.enable_rotations
+    }
+    return renderer_args
+
+def get_renderer_class(name):
+    renderer = __import__('renderer')
+    return getattr(renderer, name)
+
 def save_as_gif(fn, fp_in, fps=24):
     img, *imgs = [Image.open(f) for f in sorted(glob.glob(fp_in))]
     with open(fn, 'wb') as fp_out:
@@ -146,6 +164,6 @@ def update_mtl_diffuse(mtl_filename, r, g, b):
         f.seek(0)
         f.writelines(mtl_data)
 
-def get_rotation_matrix(r_x, r_y, r_z):
-    R = Rotation.from_euler('zyx', [r_z, r_y, r_x], degrees=True)
+def get_rotation_matrix(order, r_x, r_y, r_z):
+    R = Rotation.from_euler(order, [r_z, r_y, r_x], degrees=True)
     return R.as_matrix()
