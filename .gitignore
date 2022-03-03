@@ -1,9 +1,14 @@
+!assets
 output/
 **/*.gif
 **/*.jpg
 **/*.png
 **/*.obj
 **/*.mtl
+!assets/**/*.gif
+!assets/**/*.jpg
+!assets/**/*.png
+
 .vscode/
 
 # Byte-compiled / optimized / DLL files
