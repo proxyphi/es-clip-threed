@@ -248,7 +248,7 @@ def main(args):
     with torch.no_grad():
         for text_input in text_inputs:
             text_features.append(clip_model.encode_text(text_input))
-        text_features = torch.concat(text_features).to(device) # need to look this up
+        text_features = torch.cat(text_features).to(device)
 
     render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
 

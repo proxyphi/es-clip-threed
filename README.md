@@ -21,7 +21,7 @@ TODO: Document more results and examples!
 
 ## Requirements
 * Python 3.6+
-* [pytorch](https://pytorch.org) with CUDA support
+* [PyTorch](https://pytorch.org) with CUDA support (1.7.1+ tested)
 * [PGPElib](https://github.com/nnaisense/pgpelib).
 * [CLIP](https://github.com/openai/CLIP) from OpenAI.
 
