@@ -164,9 +164,6 @@ def main(args):
     # Load target image
     target_image = load_target(args.target, (256, 256))
 
-    with Path("output/fitnesses.txt").open('w+') as f:
-        f.truncate(0)
-
     render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
 
     # Evolutionary loop
