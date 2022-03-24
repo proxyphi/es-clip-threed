@@ -1,9 +1,11 @@
 # CLIP-Guided 3D Scene Evolution
 
+![](/assets/output-rotating-cute-white-rabbit.gif)
+![](/assets/output-rotating-citynight.gif)
+![](/assets/output-rotating-red-mushroom.gif)
+![](/assets/output-rotating-aztec-pyramid.gif)
 ![](/assets/output-rotating-rubberduck.gif)
-![](/assets/output-rubberduck.gif)
-![](/assets/output-rotating.gif)
-![](/assets/output-darwin.gif)
+![](/assets/output-rotating-streetlampboxes.gif)
 
 [Colab Notebook available](https://colab.research.google.com/drive/1WpD-EZDnDFc6l1GVVXP635xSVX62GM9B?usp=sharing)
 
