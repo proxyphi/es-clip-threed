@@ -64,6 +64,8 @@ def parse_args():
             help="Can be 'cosine' or 'spherical_dist_loss'.")
     parser.add_argument('--distance_weight', type=float, default=0.03,
             help="Multiplier for distance-based penalty.")
+    parser.add_argument('--enable_multiprocessing', type=bool, default=True,
+            help="Enables parallel rendering. Set False if using google colab.")
 
     args = parser.parse_args()
     return args
@@ -250,7 +252,9 @@ def main(args):
             text_features.append(clip_model.encode_text(text_input))
         text_features = torch.cat(text_features).to(device)
 
-    render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
+    render_pool = None
+    if args.enable_multiprocessing:
+        render_pool = mp.Pool(mp.cpu_count(), initializer=init_worker, initargs=(args,))
 
     # Evolutionary loop
     n_iterations = args.n_iterations
@@ -274,8 +278,11 @@ def main(args):
             solutions = [s.reshape((renderer.n_primitives, renderer.n_params)) for s in solutions]
             
             # Render each solution from the solver
-            renders = render_pool.map(func=render_fn, iterable=solutions)
-            renders = [render for render in renders]
+            if args.enable_multiprocessing:
+                renders = render_pool.map(func=render_fn, iterable=solutions)
+                renders = [render for render in renders]
+            else:
+                renders = [renderer.render(s) for s in solutions]
 
             # Process and augment all renders
             im_batch = [process_augment_renders(r, device) for r in renders]
@@ -314,13 +321,15 @@ def main(args):
                     f.write(f"[{datetime.datetime.now()}] Iteration: {i+1} Fitness: {np.max(fitnesses):.8f}\n")
                 
         except KeyboardInterrupt:
-            render_pool.terminate()
-            render_pool.join()
+            if args.enable_multiprocessing:
+                render_pool.terminate()
+                render_pool.join()
             renderer.destroy_window()
             return
         
-    render_pool.close()
-    render_pool.join()
+    if args.enable_multiprocessing:
+        render_pool.close()
+        render_pool.join()
 
     renderer.destroy_window()
 

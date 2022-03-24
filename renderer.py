@@ -101,7 +101,7 @@ class Renderer(ABC):
         return params
         
 
-    def render(self, params, save_image="", save_rotations="", do_absolute_scaling=True):
+    def render(self, params, save_image="", save_rotations=False, do_absolute_scaling=True):
         params = params.copy()
         params = self._feature_rescale(params)
 
