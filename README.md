@@ -5,6 +5,8 @@
 ![](/assets/output-rotating.gif)
 ![](/assets/output-darwin.gif)
 
+[Colab Notebook available](https://colab.research.google.com/drive/1WpD-EZDnDFc6l1GVVXP635xSVX62GM9B?usp=sharing)
+
 [Blog post available here](https://proxyphi.github.io/pages/projects/es-clip-threed.html)
 for a much more detailed overview.
 
